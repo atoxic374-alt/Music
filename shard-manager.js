@@ -1,10 +1,10 @@
 const { ShardingManager } = require('discord.js');
 const path = require('path');
-const config = require('./config.json');
+const { getRuntimeToken } = require('./lib/runtimeToken');
 
-const token = process.env.DISCORD_TOKEN || config.Token;
+const token = getRuntimeToken();
 if (!token) {
-  console.error('Missing token for sharding manager. Set DISCORD_TOKEN or config.Token');
+  console.error('Missing token for sharding manager. Set DISCORD_TOKEN');
   process.exit(1);
 }
 

@@ -50,3 +50,8 @@ This repository is now aligned to your requested production baseline:
 - shard mode enabled
 - monitor `/metrics` in Prometheus/Grafana
 - keep compliance mode enabled for public deployments
+
+
+## Environment token
+- Use only one env variable for bot login: `DISCORD_TOKEN`.
+- Keep `.env` consistent and remove old/duplicate token variable names.

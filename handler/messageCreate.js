@@ -1,7 +1,7 @@
 const client = require("../index");
-const config = require('../config.json');
+const { getRuntimeToken } = require('../lib/runtimeToken');
 
-client.login(process.env.DISCORD_TOKEN || config.Token);
+client.login(getRuntimeToken());
 
 client.on("ready", async () => {
     console.log(`👑 Bot > ( ${client.user.tag} )`)
