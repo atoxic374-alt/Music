@@ -1,7 +1,7 @@
 const client = require("../index");
 const config = require('../config.json');
 
-client.login(config.Token);
+client.login(process.env.DISCORD_TOKEN || config.Token);
 
 client.on("ready", async () => {
     console.log(`👑 Bot > ( ${client.user.tag} )`)

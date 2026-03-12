@@ -8,7 +8,6 @@ module.exports = {
     if (!owners.includes(message.author.id)) return;
 
     const botIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
-    const clientCheck = new Client({ intents: botIntents });
     if (message.author.bot) return;
 
     const args = message.content.split(' ');
@@ -18,11 +17,14 @@ module.exports = {
 
     const validTokens = [];
     for (const tokenValue of tokenValues) {
+      const validator = new Client({ intents: botIntents });
       try {
-        await clientCheck.login(tokenValue);
+        await validator.login(tokenValue);
         validTokens.push(tokenValue);
       } catch (error) {
         message.reply(`**❌ it's no use >** \`${tokenValue}\``).catch(() => {});
+      } finally {
+        try { await validator.destroy(); } catch {}
       }
     }
 

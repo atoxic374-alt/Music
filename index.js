@@ -38,9 +38,13 @@ app.get('/metrics', (req, res) => {
   res.setHeader('content-type', 'text/plain; version=0.0.4; charset=utf-8');
   res.send(lines.join('\n'));
 });
-app.listen(30000, () => {
-  console.log('Server Started..');
-});
+const isShardProcess = typeof process.env.SHARD_ID !== 'undefined';
+const shardId = Number(process.env.SHARD_ID || 0);
+if (!isShardProcess || shardId === 0) {
+  app.listen(30000, () => {
+    console.log('Server Started..');
+  });
+}
 
 // Suppress debug spam (messages starting with [LL], [Presence], [AUTO])
 const __origLog = console.log;
@@ -714,30 +718,28 @@ async function runBotSystem(token) {
   }
 
   // Helper to safely read & update this bot's token config
-  function getAllTokensSafe() {
+  async function getAllTokensSafe() {
     try {
-      const raw = fs.readFileSync('./tokens.json', 'utf8');
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
+      const parsed = await storage.getTokens();
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
   }
 
-  function updateTokenConfig(updater) {
-    const tokens = getAllTokensSafe();
+  async function updateTokenConfig(updater) {
+    const tokens = await getAllTokensSafe();
     const idx = tokens.findIndex((t) => t.token === token);
     if (idx === -1) return null;
     const obj = tokens[idx];
     try { updater(obj); } catch {}
-    try { fs.writeFileSync('./tokens.json', JSON.stringify(tokens, null, 2)); } catch {}
+    try { await storage.setTokens(tokens); } catch {}
     return obj;
   }
 
   // Helper to update all tokens for the same owner+server (group of music bots)
-  function updateOwnerServerTokens(ownerId, serverId, updater) {
-    const tokens = getAllTokensSafe();
+  async function updateOwnerServerTokens(ownerId, serverId, updater) {
+    const tokens = await getAllTokensSafe();
     let changed = false;
     for (const t of tokens) {
       if (t.client === ownerId && t.Server === serverId) {
@@ -745,14 +747,14 @@ async function runBotSystem(token) {
       }
     }
     if (changed) {
-      try { fs.writeFileSync('./tokens.json', JSON.stringify(tokens, null, 2)); } catch {}
+      try { await storage.setTokens(tokens); } catch {}
     }
     return changed;
   }
 
   async function applyPresenceFromConfig(reason = 'manual') {
     try {
-      const tokens = getAllTokensSafe();
+      const tokens = await getAllTokensSafe();
       const tObj = tokens.find(t => t.token === token);
       const serverId = tObj?.Server;
       const statusRaw = (tObj?.status || 'streaming').toString().toLowerCase();
@@ -865,7 +867,7 @@ async function runBotSystem(token) {
     try { console.log(`[LL:${client83883.user?.tag}] Node ready: ${name}`); } catch {}
     client83883.llReady = true;
     try {
-      const data = JSON.parse(fs.readFileSync('./tokens.json', 'utf8'));
+      const data = await storage.getTokens();
       const tObj = data.find(t => t.token === token);
       if (!tObj?.Server || !tObj?.channel) return;
       const guild = client83883.guilds.cache.get(tObj.Server);
@@ -1229,11 +1231,7 @@ const row = new ActionRowBuilder()
     client.subBotRegistry.set(token, client83883);
 
     let int = setInterval(async () => {
-        let dataRaw;
-        try { dataRaw = fs.readFileSync('./tokens.json', 'utf8'); } catch { return; }
-        if (!dataRaw) return;
-        let data;
-        try { data = JSON.parse(dataRaw); } catch { return; }
+        const data = await storage.getTokens();
         tokenObj = data.find((tokenBot) => tokenBot.token == token);
         if (!tokenObj) {
             client83883.destroy?.().catch(() => 0);
@@ -1274,10 +1272,7 @@ const row = new ActionRowBuilder()
   });
 
   client83883.on('guildCreate', async (guild) => {
-    const dataRaw = fs.readFileSync('./tokens.json', 'utf8');
-    if (!dataRaw) return;
-    let data;
-    try { data = JSON.parse(dataRaw); } catch { return; }
+    const data = await storage.getTokens();
     const tokenObj = data.find((t) => t.token === token);
     if (!tokenObj) return;
     const allowedServer = tokenObj.Server;
@@ -1297,12 +1292,7 @@ const row = new ActionRowBuilder()
   client83883.on('voiceStateUpdate', async (oldState, newState) => {
     if (newState.id !== client83883.user.id) return;
 
-    let tokens;
-    try {
-      tokens = JSON.parse(fs.readFileSync('./tokens.json', 'utf8'));
-    } catch {
-      return;
-    }
+    const tokens = await storage.getTokens();
     const tObj = tokens.find(t => t.token === token);
     if (!tObj || !tObj.channel) return;
 
@@ -1335,11 +1325,7 @@ const row = new ActionRowBuilder()
 
 client83883.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-  let dataRaw;
-  try { dataRaw = fs.readFileSync('./tokens.json', 'utf8'); } catch { return; }
-  if (dataRaw == '' || !dataRaw) return;
-  let data;
-  try { data = JSON.parse(dataRaw); } catch { return; }
+  const data = await storage.getTokens();
   let tokenObj = data.find((t) => t.token == token);
   if (!data || !tokenObj) return;
   const botId = client83883.user?.id;
@@ -1419,7 +1405,7 @@ client83883.on('messageCreate', async (message) => {
           await replyAr('> **يجب أن تكون في روم صوتي لاستخدام هذا الأمر.**');
           return;
         }
-        const updated = updateTokenConfig((obj) => {
+        const updated = await updateTokenConfig((obj) => {
           obj.channel = userVc.id;
           obj.chat = message.channel.id;
         });
@@ -1440,7 +1426,7 @@ client83883.on('messageCreate', async (message) => {
           await replyAr('> **ادخل روم صوتي أولاً ثم استخدم هذا الأمر.**');
           return;
         }
-        const updated = updateTokenConfig((obj) => {
+        const updated = await updateTokenConfig((obj) => {
           obj.channel = userVc.id;
         });
         if (!updated) {
@@ -1466,13 +1452,13 @@ client83883.on('messageCreate', async (message) => {
           q.currentMessage = null;
           q.paused = false;
         }
-        updateTokenConfig((obj) => { obj.channel = null; });
+        await updateTokenConfig((obj) => { obj.channel = null; });
         await replyAr('> **تم إخراج البوت من الروم وتعطيل 24/7.**');
         return;
       }
 
       if (mgmt === 'setchat') {
-        const updated = updateTokenConfig((obj) => { obj.chat = message.channel.id; });
+        const updated = await updateTokenConfig((obj) => { obj.chat = message.channel.id; });
         if (!updated) {
           await replyAr('> **تعذر حفظ روم الأوامر.**');
           return;
@@ -1482,7 +1468,7 @@ client83883.on('messageCreate', async (message) => {
       }
 
       if (mgmt === 'unchat') {
-        const updated = updateTokenConfig((obj) => { obj.chat = null; });
+        const updated = await updateTokenConfig((obj) => { obj.chat = null; });
         if (!updated) {
           await replyAr('> **تعذر إلغاء تقييد روم الأوامر.**');
           return;
@@ -1501,7 +1487,7 @@ client83883.on('messageCreate', async (message) => {
           await replyAr('> **هذا الأمر مخصص لمالك البوت فقط.**');
           return;
         }
-        updateOwnerServerTokens(tokenObj.client, guild.id, (t) => {
+        await updateOwnerServerTokens(tokenObj.client, guild.id, (t) => {
           if (!Array.isArray(t.extraPrefixes)) t.extraPrefixes = [];
           if (!t.extraPrefixes.includes(newPrefix)) t.extraPrefixes.push(newPrefix);
         });
@@ -1521,7 +1507,7 @@ client83883.on('messageCreate', async (message) => {
           await replyAr('> **الخيارات المتاحة: `online`, `idle`, `dnd`, `streaming`.**');
           return;
         }
-        const changed = updateOwnerServerTokens(tokenObj.client, guild.id, (t) => {
+        const changed = await updateOwnerServerTokens(tokenObj.client, guild.id, (t) => {
           t.status = desired;
         });
         if (changed) await applyPresenceFromConfig();
@@ -1540,7 +1526,7 @@ client83883.on('messageCreate', async (message) => {
   const ownerId = tokenObj.client || null;
   let isPrimaryController = false;
   if (ownerId) {
-    const tokensAll = getAllTokensSafe();
+    const tokensAll = await getAllTokensSafe();
     const primaryToken = tokensAll.find((t) => t.client === ownerId && t.Server === message.guild.id);
     if (primaryToken && primaryToken.token === token) isPrimaryController = true;
   }
@@ -1588,7 +1574,7 @@ client83883.on('messageCreate', async (message) => {
         replyArabic(message, '> **يرجى تحديد روم كتابي صالح.**');
         return;
       }
-      const changed = updateOwnerServerTokens(ownerId, message.guild.id, (t) => { t.chat = targetChannel.id; });
+      const changed = await updateOwnerServerTokens(ownerId, message.guild.id, (t) => { t.chat = targetChannel.id; });
       if (!changed) {
         replyArabic(message, '> **لا يوجد بوتات مرتبطة بهذا السيرفر.**');
       } else {
@@ -1603,7 +1589,7 @@ client83883.on('messageCreate', async (message) => {
         replyArabic(message, '> **يرجى إدخال رمز واحد فقط، مثال: `!setprefix -`.**');
         return;
       }
-      const changed = updateOwnerServerTokens(ownerId, message.guild.id, (t) => {
+      const changed = await updateOwnerServerTokens(ownerId, message.guild.id, (t) => {
         if (!Array.isArray(t.extraPrefixes)) t.extraPrefixes = [];
         if (!t.extraPrefixes.includes(newPrefix)) t.extraPrefixes.push(newPrefix);
       });
@@ -1622,7 +1608,7 @@ client83883.on('messageCreate', async (message) => {
         replyArabic(message, '> **الخيارات المتاحة: `online`, `idle`, `dnd`, `streaming`.**');
         return;
       }
-      const changed = updateOwnerServerTokens(ownerId, message.guild.id, (t) => {
+      const changed = await updateOwnerServerTokens(ownerId, message.guild.id, (t) => {
         t.status = desired;
       });
       if (changed) await applyPresenceFromConfig();
