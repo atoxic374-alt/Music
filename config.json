@@ -1,0 +1,21 @@
+{
+
+    "owners" : ["",""],
+    "Token": "",
+    "prefix": "!",
+    "logChannelId": "",
+    "emco": "#7B7884",
+    "Support": "",
+    "useEmbeds": true,
+    "lavalink": {
+        "nodes": [
+            {
+                "name": "main",
+                "host": "node-2.midas.host",
+                "port": 2333,
+                "password": "",
+                "secure": false
+            }
+        ]
+    }
+}
