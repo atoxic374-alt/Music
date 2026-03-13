@@ -61,7 +61,13 @@ func (r *CommandRouter) OnInteraction(s *discordgo.Session, i *discordgo.Interac
 	}
 	custom := i.MessageComponentData().CustomID
 	if strings.HasPrefix(custom, "restore_roles:") {
-		if i.Member == nil || !r.protector.IsOwner(i.Member.User.ID) {
+		actorID := ""
+		if i.Member != nil && i.Member.User != nil {
+			actorID = i.Member.User.ID
+		} else if i.User != nil {
+			actorID = i.User.ID
+		}
+		if !r.protector.IsOwner(actorID) {
 			r.respondComponent(s, i, "هذا الزر متاح فقط لأونرات البوت.")
 			return
 		}
@@ -70,7 +76,11 @@ func (r *CommandRouter) OnInteraction(s *discordgo.Session, i *discordgo.Interac
 			r.respondComponent(s, i, "تعذر الاستعادة: "+err.Error())
 			return
 		}
-		r.respondComponent(s, i, "✅ تمت محاولة استعادة رولات الشخص من النسخة.")
+		r.protector.ResolveAlert(targetID)
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{Content: "✅ تمت استعادة الرولات وإغلاق التنبيه.", Components: []discordgo.MessageComponent{}},
+		})
 		return
 	}
 	switch custom {

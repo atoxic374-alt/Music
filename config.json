@@ -6,7 +6,6 @@
     "PUT_SECOND_OWNER_ID"
   ],
   "guild_id": "PUT_GUILD_ID",
-  "alert_channel": "PUT_ALERT_CHANNEL_ID",
   "dangerous_perms": 8,
   "drift_kick_percent": 30
 }

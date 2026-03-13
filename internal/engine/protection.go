@@ -20,7 +20,6 @@ import (
 type Protector struct {
 	s              *discordgo.Session
 	guildID        string
-	alertChannel   string
 	dangerousPerms int64
 	driftThreshold float64
 	owners         map[string]bool
@@ -32,7 +31,7 @@ type Protector struct {
 	snapshot      model.GuildSnapshot
 	resourceLocks sync.Map // map[string]*sync.Mutex
 	alertMu       sync.Mutex
-	lastAlertAt   map[string]time.Time
+	activeAlerts  map[string]bool
 }
 
 type WALRecord struct {
@@ -42,7 +41,7 @@ type WALRecord struct {
 	Reason  string    `json:"reason,omitempty"`
 }
 
-func NewProtector(s *discordgo.Session, guildID, alertChannel string, dangerousPerms int64, driftThreshold float64, owners []string) *Protector {
+func NewProtector(s *discordgo.Session, guildID string, dangerousPerms int64, driftThreshold float64, owners []string) *Protector {
 	ownerMap := map[string]bool{}
 	for _, id := range owners {
 		ownerMap[id] = true
@@ -50,13 +49,12 @@ func NewProtector(s *discordgo.Session, guildID, alertChannel string, dangerousP
 	return &Protector{
 		s:              s,
 		guildID:        guildID,
-		alertChannel:   alertChannel,
 		dangerousPerms: dangerousPerms,
 		driftThreshold: driftThreshold,
 		owners:         ownerMap,
 		baselinePath:   "data/snapshot.json",
 		walPath:        "data/events.log",
-		lastAlertAt:    map[string]time.Time{},
+		activeAlerts:   map[string]bool{},
 	}
 }
 
@@ -64,9 +62,16 @@ func (p *Protector) Session() *discordgo.Session { return p.s }
 func (p *Protector) GuildID() string             { return p.guildID }
 
 func (p *Protector) IsOwner(userID string) bool {
+	if userID == "" {
+		return false
+	}
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.owners[userID]
+	isCfgOwner := p.owners[userID]
+	p.mu.RUnlock()
+	if isCfgOwner {
+		return true
+	}
+	return p.serverOwnerID() == userID
 }
 
 func (p *Protector) AddTrustedUser(userID string) {
@@ -570,16 +575,39 @@ func (p *Protector) BanUser(ctx context.Context, userID, reason string) error {
 	return p.s.GuildBanCreateWithReason(p.guildID, userID, reason, 1)
 }
 
-func (p *Protector) shouldSendAlert(actorID, reason string) bool {
-	key := actorID + "|" + reason
-	now := time.Now()
+func (p *Protector) alertKey(actorID, reason string) string { return actorID + "|" + reason }
+
+func (p *Protector) acquireAlert(actorID, reason string) bool {
+	key := p.alertKey(actorID, reason)
 	p.alertMu.Lock()
 	defer p.alertMu.Unlock()
-	if t, ok := p.lastAlertAt[key]; ok && now.Sub(t) < 3*time.Second {
+	if p.activeAlerts[key] {
 		return false
 	}
-	p.lastAlertAt[key] = now
+	p.activeAlerts[key] = true
 	return true
+}
+
+func (p *Protector) ResolveAlert(actorID string) {
+	p.alertMu.Lock()
+	defer p.alertMu.Unlock()
+	for key := range p.activeAlerts {
+		if strings.HasPrefix(key, actorID+"|") {
+			delete(p.activeAlerts, key)
+		}
+	}
+}
+
+func (p *Protector) serverOwnerID() string {
+	g, err := p.s.State.Guild(p.guildID)
+	if err == nil && g.OwnerID != "" {
+		return g.OwnerID
+	}
+	g, err = p.s.Guild(p.guildID)
+	if err == nil {
+		return g.OwnerID
+	}
+	return ""
 }
 
 func (p *Protector) PunishActor(ctx context.Context, userID string, reason string) error {
@@ -587,22 +615,44 @@ func (p *Protector) PunishActor(ctx context.Context, userID string, reason strin
 	if userID == "" || p.IsTrusted(userID) {
 		return nil
 	}
+
 	member, err := p.s.GuildMember(p.guildID, userID)
+	removedAny := false
 	if err == nil {
 		for _, roleID := range member.Roles {
-			_ = p.s.GuildMemberRoleRemove(p.guildID, userID, roleID)
+			if remErr := p.s.GuildMemberRoleRemove(p.guildID, userID, roleID); remErr == nil {
+				removedAny = true
+			}
 		}
 	}
-	if p.alertChannel != "" && p.shouldSendAlert(userID, reason) {
-		embed := &discordgo.MessageEmbed{
-			Title:       "Protection action",
-			Description: fmt.Sprintf("User <@%s> changed the server and roles were removed.\nReason: %s", userID, reason),
-			Color:       0x5865F2,
-			Timestamp:   time.Now().Format(time.RFC3339),
-		}
+
+	if !p.acquireAlert(userID, reason) {
+		return nil
+	}
+
+	ownerID := p.serverOwnerID()
+	if ownerID == "" {
+		return nil
+	}
+	dm, err := p.s.UserChannelCreate(ownerID)
+	if err != nil || dm == nil {
+		return nil
+	}
+
+	desc := fmt.Sprintf("User <@%s> changed the server.\nReason: %s", userID, reason)
+	if removedAny {
+		desc += "\nAction: roles removed successfully."
+	} else {
+		desc += "\nAction: unable to remove roles (user may be equal/higher than bot or no removable roles)."
+	}
+	embed := &discordgo.MessageEmbed{Title: "Protection action", Description: desc, Color: 0x5865F2, Timestamp: time.Now().Format(time.RFC3339)}
+
+	if removedAny {
 		components := []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.Button{CustomID: "restore_roles:" + userID, Label: "استعادة رولات الشخص", Style: discordgo.SuccessButton}}}}
-		_, _ = p.s.ChannelMessageSendComplex(p.alertChannel, &discordgo.MessageSend{Embed: embed, Components: components})
+		_, _ = p.s.ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{Embed: embed, Components: components})
+		return nil
 	}
+	_, _ = p.s.ChannelMessageSendEmbed(dm.ID, embed)
 	return nil
 }
 

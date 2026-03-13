@@ -13,7 +13,6 @@ type Config struct {
 	OwnerID          string   `json:"owner_id"`
 	OwnerIDs         []string `json:"owner_ids"`
 	GuildID          string   `json:"guild_id"`
-	AlertChannel     string   `json:"alert_channel"`
 	DangerousPerms   int64    `json:"dangerous_perms"`
 	DriftKickPercent float64  `json:"drift_kick_percent"`
 }
