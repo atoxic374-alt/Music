@@ -21,7 +21,6 @@ type Protector struct {
 	s              *discordgo.Session
 	guildID        string
 	alertChannel   string
-	workerCount    int
 	dangerousPerms int64
 	driftThreshold float64
 	owners         map[string]bool
@@ -32,6 +31,8 @@ type Protector struct {
 	mu            sync.RWMutex
 	snapshot      model.GuildSnapshot
 	resourceLocks sync.Map // map[string]*sync.Mutex
+	alertMu       sync.Mutex
+	lastAlertAt   map[string]time.Time
 }
 
 type WALRecord struct {
@@ -41,7 +42,7 @@ type WALRecord struct {
 	Reason  string    `json:"reason,omitempty"`
 }
 
-func NewProtector(s *discordgo.Session, guildID, alertChannel string, workerCount int, dangerousPerms int64, driftThreshold float64, owners []string) *Protector {
+func NewProtector(s *discordgo.Session, guildID, alertChannel string, dangerousPerms int64, driftThreshold float64, owners []string) *Protector {
 	ownerMap := map[string]bool{}
 	for _, id := range owners {
 		ownerMap[id] = true
@@ -50,12 +51,12 @@ func NewProtector(s *discordgo.Session, guildID, alertChannel string, workerCoun
 		s:              s,
 		guildID:        guildID,
 		alertChannel:   alertChannel,
-		workerCount:    workerCount,
 		dangerousPerms: dangerousPerms,
 		driftThreshold: driftThreshold,
 		owners:         ownerMap,
 		baselinePath:   "data/snapshot.json",
 		walPath:        "data/events.log",
+		lastAlertAt:    map[string]time.Time{},
 	}
 }
 
@@ -569,6 +570,18 @@ func (p *Protector) BanUser(ctx context.Context, userID, reason string) error {
 	return p.s.GuildBanCreateWithReason(p.guildID, userID, reason, 1)
 }
 
+func (p *Protector) shouldSendAlert(actorID, reason string) bool {
+	key := actorID + "|" + reason
+	now := time.Now()
+	p.alertMu.Lock()
+	defer p.alertMu.Unlock()
+	if t, ok := p.lastAlertAt[key]; ok && now.Sub(t) < 3*time.Second {
+		return false
+	}
+	p.lastAlertAt[key] = now
+	return true
+}
+
 func (p *Protector) PunishActor(ctx context.Context, userID string, reason string) error {
 	_ = ctx
 	if userID == "" || p.IsTrusted(userID) {
@@ -580,7 +593,7 @@ func (p *Protector) PunishActor(ctx context.Context, userID string, reason strin
 			_ = p.s.GuildMemberRoleRemove(p.guildID, userID, roleID)
 		}
 	}
-	if p.alertChannel != "" {
+	if p.alertChannel != "" && p.shouldSendAlert(userID, reason) {
 		embed := &discordgo.MessageEmbed{
 			Title:       "Protection action",
 			Description: fmt.Sprintf("User <@%s> changed the server and roles were removed.\nReason: %s", userID, reason),

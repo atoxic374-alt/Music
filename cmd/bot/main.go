@@ -28,7 +28,7 @@ func main() {
 	}
 	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMembers | discordgo.IntentsGuildMessages
 
-	protector := engine.NewProtector(s, cfg.GuildID, cfg.AlertChannel, cfg.WorkerCount, cfg.DangerousPerms, cfg.DriftKickPercent, cfg.OwnerIDs)
+	protector := engine.NewProtector(s, cfg.GuildID, cfg.AlertChannel, cfg.DangerousPerms, cfg.DriftKickPercent, cfg.OwnerIDs)
 	router := discordx.NewCommandRouter(protector, cfg.Prefix)
 
 	s.AddHandler(func(_ *discordgo.Session, r *discordgo.Ready) {

@@ -14,7 +14,6 @@ type Config struct {
 	OwnerIDs         []string `json:"owner_ids"`
 	GuildID          string   `json:"guild_id"`
 	AlertChannel     string   `json:"alert_channel"`
-	WorkerCount      int      `json:"worker_count"`
 	DangerousPerms   int64    `json:"dangerous_perms"`
 	DriftKickPercent float64  `json:"drift_kick_percent"`
 }
@@ -34,9 +33,6 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Prefix == "" {
 		cfg.Prefix = "!"
-	}
-	if cfg.WorkerCount <= 0 {
-		cfg.WorkerCount = 64
 	}
 	if cfg.DriftKickPercent <= 0 {
 		cfg.DriftKickPercent = 30

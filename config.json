@@ -7,7 +7,6 @@
   ],
   "guild_id": "PUT_GUILD_ID",
   "alert_channel": "PUT_ALERT_CHANNEL_ID",
-  "worker_count": 128,
   "dangerous_perms": 8,
   "drift_kick_percent": 30
 }
