@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -74,8 +73,7 @@ func main() {
 }
 
 func handleGuardEvent(p *engine.Protector, reason string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	actorID := fetchLastActor(p)
 	roleTargets, channelTargets := engine.TargetsFromReason(reason)
 	_ = p.HandleSuspiciousChange(ctx, actorID, reason, roleTargets, channelTargets)

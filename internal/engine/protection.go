@@ -261,7 +261,6 @@ func (p *Protector) ReconcileTargets(ctx context.Context, roleTargets []string, 
 		channelByName[c.Name] = c
 	}
 
-	sem := make(chan struct{}, p.workerCount)
 	errCh := make(chan error, len(snap.Roles)+len(snap.Channels)+4)
 	var wg sync.WaitGroup
 	run := func(fn func() error) {
@@ -271,9 +270,8 @@ func (p *Protector) ReconcileTargets(ctx context.Context, roleTargets []string, 
 			select {
 			case <-ctx.Done():
 				return
-			case sem <- struct{}{}:
+			default:
 			}
-			defer func() { <-sem }()
 			if err := fn(); err != nil {
 				errCh <- err
 			}
@@ -508,7 +506,6 @@ func (p *Protector) RemoveAdminFromAllRoles(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	sem := make(chan struct{}, p.workerCount)
 	var wg sync.WaitGroup
 	for _, role := range roles {
 		r := role
@@ -518,9 +515,8 @@ func (p *Protector) RemoveAdminFromAllRoles(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return
-			case sem <- struct{}{}:
+			default:
 			}
-			defer func() { <-sem }()
 			if int64(r.Permissions)&discordgo.PermissionAdministrator == 0 {
 				return
 			}
