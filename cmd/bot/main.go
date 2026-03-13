@@ -72,6 +72,9 @@ func main() {
 
 	if err := protector.LoadSnapshot("data/snapshot.json"); err != nil {
 		log.Printf("no saved baseline loaded yet: %v", err)
+	} else {
+		protector.EnableProtection()
+		log.Printf("protection enabled from saved baseline")
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -80,6 +83,9 @@ func main() {
 }
 
 func handleGuardEvent(p *engine.Protector, reason string) {
+	if !p.IsProtectionEnabled() {
+		return
+	}
 	ctx := context.Background()
 	actorID := fetchLastActor(p, reason)
 	roleTargets, channelTargets := engine.TargetsFromReason(reason)

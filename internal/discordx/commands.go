@@ -50,6 +50,12 @@ func (r *CommandRouter) OnMessageCreate(s *discordgo.Session, m *discordgo.Messa
 		r.handleTrust(s, m, args)
 	case "untrust":
 		r.handleUntrust(s, m, args)
+	case "protect-off":
+		r.handleProtectOff(s, m)
+	case "protect-on":
+		r.handleProtectOn(s, m)
+	case "protect-status":
+		r.handleProtectStatus(s, m)
 	default:
 		_, _ = s.ChannelMessageSendReply(m.ChannelID, "أمر غير معروف.", m.Reference())
 	}
@@ -83,6 +89,18 @@ func (r *CommandRouter) OnInteraction(s *discordgo.Session, i *discordgo.Interac
 		})
 		return
 	}
+	if strings.HasPrefix(custom, "trusted:") {
+		actorID := ""
+		if i.Member != nil && i.Member.User != nil {
+			actorID = i.Member.User.ID
+		} else if i.User != nil {
+			actorID = i.User.ID
+		}
+		if !r.protector.IsOwner(actorID) {
+			r.respondComponent(s, i, "هذا الزر متاح فقط لأونرات البوت.")
+			return
+		}
+	}
 	switch custom {
 	case "trusted:add":
 		r.respondComponent(s, i, "استخدم الأمر: trust <userID>")
@@ -106,6 +124,7 @@ func (r *CommandRouter) handleProtect(s *discordgo.Session, m *discordgo.Message
 		_, _ = s.ChannelMessageSendReply(m.ChannelID, "فشل حفظ النسخة: "+err.Error(), m.Reference())
 		return
 	}
+	r.protector.EnableProtection()
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, "✅ تم تفعيل الحماية وحفظ النسخة الأساسية.", m.Reference())
 }
 
@@ -155,6 +174,24 @@ func (r *CommandRouter) handleUntrust(s *discordgo.Session, m *discordgo.Message
 	r.protector.RemoveTrustedUser(id)
 	_ = r.protector.SaveSnapshot("data/snapshot.json")
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, "✅ تمت إزالة المستخدم من الموثوقين.", m.Reference())
+}
+
+func (r *CommandRouter) handleProtectOn(s *discordgo.Session, m *discordgo.MessageCreate) {
+	r.protector.EnableProtection()
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "✅ تم تشغيل الحماية.", m.Reference())
+}
+
+func (r *CommandRouter) handleProtectOff(s *discordgo.Session, m *discordgo.MessageCreate) {
+	r.protector.DisableProtection()
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "⏸️ تم إيقاف الحماية مؤقتًا.", m.Reference())
+}
+
+func (r *CommandRouter) handleProtectStatus(s *discordgo.Session, m *discordgo.MessageCreate) {
+	status := "موقفة"
+	if r.protector.IsProtectionEnabled() {
+		status = "شغالة"
+	}
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "حالة الحماية الحالية: "+status, m.Reference())
 }
 
 func (r *CommandRouter) TrustedEmbed(trusted []string, avatarURL string) *discordgo.MessageEmbed {

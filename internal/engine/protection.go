@@ -31,13 +31,16 @@ type Protector struct {
 	mu               sync.RWMutex
 	snapshot         model.GuildSnapshot
 	resourceLocks    sync.Map // map[string]*sync.Mutex
-	alertMu          sync.Mutex
+	alertMu          sync.RWMutex
 	activeAlerts     map[string]bool
 	blockedActors    map[string]bool
 	activeAlertsPath string
 	blockedPath      string
 	metricsMu        sync.Mutex
 	metrics          map[string]uint64
+
+	protectionMu      sync.RWMutex
+	protectionEnabled bool
 }
 
 type WALRecord struct {
@@ -113,8 +116,8 @@ func (p *Protector) withRetry(op string, fn func() error) error {
 }
 
 func (p *Protector) IsBlockedActor(userID string) bool {
-	p.alertMu.Lock()
-	defer p.alertMu.Unlock()
+	p.alertMu.RLock()
+	defer p.alertMu.RUnlock()
 	return p.blockedActors[userID]
 }
 
@@ -127,6 +130,24 @@ func (p *Protector) markBlockedActor(userID string) {
 	}
 	p.alertMu.Unlock()
 	p.saveJSONFile(p.blockedPath, cp)
+}
+
+func (p *Protector) EnableProtection() {
+	p.protectionMu.Lock()
+	p.protectionEnabled = true
+	p.protectionMu.Unlock()
+}
+
+func (p *Protector) DisableProtection() {
+	p.protectionMu.Lock()
+	p.protectionEnabled = false
+	p.protectionMu.Unlock()
+}
+
+func (p *Protector) IsProtectionEnabled() bool {
+	p.protectionMu.RLock()
+	defer p.protectionMu.RUnlock()
+	return p.protectionEnabled
 }
 
 func (p *Protector) EnforceBlockedMemberDangerousRoles(ctx context.Context, userID string) error {
@@ -662,8 +683,8 @@ func (p *Protector) alertKey(actorID, reason string) string { return actorID + "
 func (p *Protector) acquireAlert(actorID, reason string) bool {
 	key := p.alertKey(actorID, reason)
 	p.alertMu.Lock()
-	defer p.alertMu.Unlock()
 	if p.activeAlerts[key] {
+		p.alertMu.Unlock()
 		return false
 	}
 	p.activeAlerts[key] = true
@@ -671,13 +692,13 @@ func (p *Protector) acquireAlert(actorID, reason string) bool {
 	for k, v := range p.activeAlerts {
 		cp[k] = v
 	}
+	p.alertMu.Unlock()
 	p.saveJSONFile(p.activeAlertsPath, cp)
 	return true
 }
 
 func (p *Protector) ResolveAlert(actorID string) {
 	p.alertMu.Lock()
-	defer p.alertMu.Unlock()
 	for key := range p.activeAlerts {
 		if strings.HasPrefix(key, actorID+"|") {
 			delete(p.activeAlerts, key)
@@ -687,6 +708,7 @@ func (p *Protector) ResolveAlert(actorID string) {
 	for k, v := range p.activeAlerts {
 		cp[k] = v
 	}
+	p.alertMu.Unlock()
 	p.saveJSONFile(p.activeAlertsPath, cp)
 }
 
