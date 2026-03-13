@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"sort"
 	"strings"
@@ -27,11 +28,16 @@ type Protector struct {
 	baselinePath string
 	walPath      string
 
-	mu            sync.RWMutex
-	snapshot      model.GuildSnapshot
-	resourceLocks sync.Map // map[string]*sync.Mutex
-	alertMu       sync.Mutex
-	activeAlerts  map[string]bool
+	mu               sync.RWMutex
+	snapshot         model.GuildSnapshot
+	resourceLocks    sync.Map // map[string]*sync.Mutex
+	alertMu          sync.Mutex
+	activeAlerts     map[string]bool
+	blockedActors    map[string]bool
+	activeAlertsPath string
+	blockedPath      string
+	metricsMu        sync.Mutex
+	metrics          map[string]uint64
 }
 
 type WALRecord struct {
@@ -47,15 +53,87 @@ func NewProtector(s *discordgo.Session, guildID string, dangerousPerms int64, dr
 		ownerMap[id] = true
 	}
 	return &Protector{
-		s:              s,
-		guildID:        guildID,
-		dangerousPerms: dangerousPerms,
-		driftThreshold: driftThreshold,
-		owners:         ownerMap,
-		baselinePath:   "data/snapshot.json",
-		walPath:        "data/events.log",
-		activeAlerts:   map[string]bool{},
+		s:                s,
+		guildID:          guildID,
+		dangerousPerms:   dangerousPerms,
+		driftThreshold:   driftThreshold,
+		owners:           ownerMap,
+		baselinePath:     "data/snapshot.json",
+		walPath:          "data/events.log",
+		activeAlerts:     map[string]bool{},
+		blockedActors:    map[string]bool{},
+		activeAlertsPath: "data/active_alerts.json",
+		blockedPath:      "data/blocked_actors.json",
+		metrics:          map[string]uint64{},
 	}
+}
+
+func (p *Protector) InitPersistentState() {
+	_ = p.loadJSONFile(p.activeAlertsPath, &p.activeAlerts)
+	_ = p.loadJSONFile(p.blockedPath, &p.blockedActors)
+}
+
+func (p *Protector) loadJSONFile(path string, out interface{}) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+func (p *Protector) saveJSONFile(path string, in interface{}) {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
+}
+
+func (p *Protector) incMetric(name string) {
+	p.metricsMu.Lock()
+	p.metrics[name]++
+	p.metricsMu.Unlock()
+}
+
+func (p *Protector) withRetry(op string, fn func() error) error {
+	_ = op
+	var err error
+	for i := 0; i < 5; i++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "429") {
+			return err
+		}
+		j := time.Duration(50+rand.Intn(120)) * time.Millisecond
+		time.Sleep(time.Duration(1<<i)*100*time.Millisecond + j)
+	}
+	return err
+}
+
+func (p *Protector) IsBlockedActor(userID string) bool {
+	p.alertMu.Lock()
+	defer p.alertMu.Unlock()
+	return p.blockedActors[userID]
+}
+
+func (p *Protector) markBlockedActor(userID string) {
+	p.alertMu.Lock()
+	p.blockedActors[userID] = true
+	cp := make(map[string]bool, len(p.blockedActors))
+	for k, v := range p.blockedActors {
+		cp[k] = v
+	}
+	p.alertMu.Unlock()
+	p.saveJSONFile(p.blockedPath, cp)
+}
+
+func (p *Protector) EnforceBlockedMemberDangerousRoles(ctx context.Context, userID string) error {
+	if !p.IsBlockedActor(userID) {
+		return nil
+	}
+	return p.StripDangerousRolesFromMember(ctx, userID)
 }
 
 func (p *Protector) Session() *discordgo.Session { return p.s }
@@ -486,6 +564,7 @@ func (p *Protector) HandleSuspiciousChange(ctx context.Context, actorID, reason 
 	for err := range errCh {
 		joined = errors.Join(joined, err)
 	}
+	p.incMetric("incident_total")
 	_ = p.appendWAL(WALRecord{At: time.Now().UTC(), Type: "incident", ActorID: actorID, Reason: reason})
 	return joined
 }
@@ -497,6 +576,7 @@ func (p *Protector) RefreshBaselineFromTrustedChange(ctx context.Context, actorI
 	if err := p.SaveSnapshot(""); err != nil {
 		return err
 	}
+	p.incMetric("trusted_update_total")
 	_ = p.appendWAL(WALRecord{At: time.Now().UTC(), Type: "trusted_update", ActorID: actorID, Reason: reason})
 	return nil
 }
@@ -553,7 +633,7 @@ func (p *Protector) StripDangerousRolesFromMember(ctx context.Context, userID st
 	}
 	for _, roleID := range member.Roles {
 		if rolePerms[roleID]&p.dangerousPerms != 0 {
-			_ = p.s.GuildMemberRoleRemove(p.guildID, userID, roleID)
+			_ = p.withRetry("dangerous_role_remove", func() error { return p.s.GuildMemberRoleRemove(p.guildID, userID, roleID) })
 		}
 	}
 	return nil
@@ -567,12 +647,14 @@ func (p *Protector) RestoreMemberRoles(ctx context.Context, userID string) error
 	if len(roles) == 0 {
 		return errors.New("no saved roles for this member")
 	}
-	return p.s.GuildMemberEdit(p.guildID, userID, &discordgo.GuildMemberParams{Roles: &roles})
+	return p.withRetry("member_edit", func() error {
+		return p.s.GuildMemberEdit(p.guildID, userID, &discordgo.GuildMemberParams{Roles: &roles})
+	})
 }
 
 func (p *Protector) BanUser(ctx context.Context, userID, reason string) error {
 	_ = ctx
-	return p.s.GuildBanCreateWithReason(p.guildID, userID, reason, 1)
+	return p.withRetry("ban", func() error { return p.s.GuildBanCreateWithReason(p.guildID, userID, reason, 1) })
 }
 
 func (p *Protector) alertKey(actorID, reason string) string { return actorID + "|" + reason }
@@ -585,6 +667,11 @@ func (p *Protector) acquireAlert(actorID, reason string) bool {
 		return false
 	}
 	p.activeAlerts[key] = true
+	cp := make(map[string]bool, len(p.activeAlerts))
+	for k, v := range p.activeAlerts {
+		cp[k] = v
+	}
+	p.saveJSONFile(p.activeAlertsPath, cp)
 	return true
 }
 
@@ -596,6 +683,11 @@ func (p *Protector) ResolveAlert(actorID string) {
 			delete(p.activeAlerts, key)
 		}
 	}
+	cp := make(map[string]bool, len(p.activeAlerts))
+	for k, v := range p.activeAlerts {
+		cp[k] = v
+	}
+	p.saveJSONFile(p.activeAlertsPath, cp)
 }
 
 func (p *Protector) serverOwnerID() string {
@@ -620,11 +712,12 @@ func (p *Protector) PunishActor(ctx context.Context, userID string, reason strin
 	removedAny := false
 	if err == nil {
 		for _, roleID := range member.Roles {
-			if remErr := p.s.GuildMemberRoleRemove(p.guildID, userID, roleID); remErr == nil {
+			if remErr := p.withRetry("role_remove", func() error { return p.s.GuildMemberRoleRemove(p.guildID, userID, roleID) }); remErr == nil {
 				removedAny = true
 			}
 		}
 	}
+	p.markBlockedActor(userID)
 
 	if !p.acquireAlert(userID, reason) {
 		return nil
@@ -634,7 +727,12 @@ func (p *Protector) PunishActor(ctx context.Context, userID string, reason strin
 	if ownerID == "" {
 		return nil
 	}
-	dm, err := p.s.UserChannelCreate(ownerID)
+	var dm *discordgo.Channel
+	err = p.withRetry("dm_create", func() error {
+		var e error
+		dm, e = p.s.UserChannelCreate(ownerID)
+		return e
+	})
 	if err != nil || dm == nil {
 		return nil
 	}
@@ -649,10 +747,13 @@ func (p *Protector) PunishActor(ctx context.Context, userID string, reason strin
 
 	if removedAny {
 		components := []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.Button{CustomID: "restore_roles:" + userID, Label: "استعادة رولات الشخص", Style: discordgo.SuccessButton}}}}
-		_, _ = p.s.ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{Embed: embed, Components: components})
+		_ = p.withRetry("dm_send_complex", func() error {
+			_, e := p.s.ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{Embed: embed, Components: components})
+			return e
+		})
 		return nil
 	}
-	_, _ = p.s.ChannelMessageSendEmbed(dm.ID, embed)
+	_ = p.withRetry("dm_send_embed", func() error { _, e := p.s.ChannelMessageSendEmbed(dm.ID, embed); return e })
 	return nil
 }
 
